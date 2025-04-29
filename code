@@ -8,7 +8,7 @@ function doGet(e) {
     return ContentService.createTextOutput(e.parameter['hub.challenge']);
 }}
 function doPost(e) {
-
+ 
     if (e.parameter['hub.verify_token'] === 'thuchi') {
     return ContentService.createTextOutput(e.parameter['hub.challenge']);
   }
@@ -43,34 +43,84 @@ function doPost(e) {
 
   return ContentService.createTextOutput(JSON.stringify({status: 'ok'})).setMimeType(ContentService.MimeType.JSON);
 }
-
-
-function handleTransaction(chatId, text) {
-  const parts = text.split(" ");
-  let amount = parts[0];
-  let type = parts[1];
-  let desc = parts.slice(2).join(" ");
-
-  // Kiểm tra nếu chỉ có amount được gửi, đặt type mặc định là "chi"
-  if (!["thu", "chi"].includes(type?.toLowerCase())) {
-    desc = parts.slice(1).join(" ");
-    type = "chi";
+function getLastTransactionTime(sheet) {
+  const lastRow = getLastRowWithData(sheet, 'A'); // Cột A giả sử chứa thời gian
+  if (lastRow <= 1) {
+    return null; // Không có dữ liệu trước đó
   }
 
-  if (!isValidAmount(amount)) {
-    sendMessage(chatId, "Lỗi: Nhập đúng cú pháp <số tiền> <thu/chi> <mô tả>.");
+  const timeCell = sheet.getRange(lastRow, 1).getValue(); // Lấy giá trị thời gian từ cột A
+  return new Date(timeCell); // Trả về đối tượng Date
+}
+
+function calculateBalance(sheet) {
+  const data = sheet.getRange(2, 2, sheet.getLastRow() - 1, 2).getValues(); // Lấy dữ liệu cột "Loại" và "Số tiền" từ hàng 2
+  let balance = 0;
+
+  data.forEach(([type, amount]) => {
+    if (type === "thu") {
+      balance += amount;
+    } else if (type === "chi") {
+      balance -= amount;
+    }
+  });
+
+  return balance;
+}
+function handleTransaction(chatId, text) {
+  const sheet = getOrCreateMonthlySheet();
+  const lastTime = getLastTransactionTime(sheet);
+  const currentTime = new Date();
+
+  if (lastTime && (currentTime - lastTime) < 7000) {
+    sendMessage(chatId, "Yêu cầu này đã được xử lý.");
     return;
   }
 
-  const sheet = getOrCreateMonthlySheet();
+  // Tìm số tiền trong nội dung (cho phép định dạng "50k", "1tr", "200000", v.v.)
+  const match = text.match(/(\d+(\.\d+)?(k|tr)?)/i);
+  if (!match) {
+    sendMessage(chatId, "Lỗi: Không tìm thấy số tiền trong nội dung.");
+    return;
+  }
+
+  const amountStr = match[0]; // Lấy số tiền từ nội dung
+  const amount = parseAmount(amountStr); // Chuyển đổi thành số thực
+  if (!isValidAmount(amount)) {
+    sendMessage(chatId, "Lỗi: Số tiền không hợp lệ.");
+    return;
+  }
+
+  // Loại bỏ số tiền khỏi nội dung để lấy mô tả
+  let desc = text.replace(amountStr, "").trim();
+  
+  // Xác định "thu" hoặc "chi", mặc định là "chi"
+  let type = "chi";
+  if (desc.toLowerCase().includes("thu")) {
+    type = "thu";
+    desc = desc.replace(/thu/i, "").trim(); // Xóa từ "thu" khỏi mô tả nếu có
+  } else if (desc.toLowerCase().includes("chi")) {
+    desc = desc.replace(/chi/i, "").trim(); // Xóa từ "chi" khỏi mô tả nếu có
+  }
+
+  // Nếu mô tả trống, đặt là "Không có mô tả"
+  if (!desc) {
+    desc = "Không có mô tả";
+  }
+
+  // Ghi dữ liệu vào Google Sheet
   sheet.appendRow([
     new Date(),
-    type.toLowerCase(),
-    parseAmount(amount),
-    desc || "Không có mô tả",
+    type,
+    amount,
+    desc,
   ]);
 
-  sendMessage(chatId, `Đã thêm giao dịch:\nSố tiền: ${amount}\nLoại: ${type}\nMô tả: ${desc}`);
+  // Tính toán số dư hiện tại
+  const balance = calculateBalance(sheet);
+
+  // Gửi phản hồi
+  sendMessage(chatId, `Đã thêm giao dịch:\nMô tả: ${desc}\nSố tiền: ${formatCurrency(amount)}\nLoại: ${type}\nSố dư hiện tại: ${formatCurrency(balance)}`);
 }
 
 
